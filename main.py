@@ -5,77 +5,99 @@ import pyautogui
 import numpy as np
 import time
 
-wCam, hCam = 640, 480
-frameR = 100  # Frame reduction
-smoothening = 10
-
-INDEX_FINGER_TIP = 8
-MIDDLE_FINGER_TIP = 12
-INDEX_FINGER = 1
-MIDDLE_FINGER = 2
-
-pTime = 0
-plocX, plocY = 0,0
-clocX, clocY = 0,0
+pyautogui.FAILSAFE = False
+pyautogui.PAUSE = 0
 
 cap = cv2.VideoCapture(0)
-cap.set(3, wCam)  # set width of capture window
-cap.set(4, hCam)  # set height of capture window
-
-detector = HandDetector(maxHands=1)
-wScr, hScr = pyautogui.size()
+detector = HandDetector(detectionCon=0.8, maxHands=1)
+wScr, hScr = pyautogui.size() # Ukuran layar
+smoothening = 9 # Faktor perataan (smoothing) gerakan kursor
+pX, pY = 0, 0 # Posisi kursor sebelumnya
+cX, cY = 0, 0 # Posisi kursor saat ini
+is_dragging = False
 
 while True:
-    # Find the hand landmarks
     success, img = cap.read()
-    hands, img = detector.findHands(img, draw=True)
+    if not success:
+        continue
+
+    img = cv2.flip(img,1)
+
+    hands, img = detector.findHands(img, flipType=False)
 
     if hands:
-        hand = hands[0]
-        lmList = hand["lmList"]  # list of 21 landmark points
-        bbox = hand["bbox"]  # bounding box info x, y, w, h
+        hands = hands[0]
+        lmList = hands['lmList']
+        
+        WRIST_POINT = lmList[0]
 
-        # Get the tip of the index and middle fingers
-        if len(lmList) != 0:
-            x1, y1 = lmList[INDEX_FINGER_TIP]
-            x2, y2 = lmList[MIDDLE_FINGER_TIP]
+        INDEX_FINGER_TIP = lmList[8]
+        INDEX_6_POINT = lmList[6]
 
-        # Check which fingers are up
-        fingers = detector.fingersUp(hand)
-        cv2.rectangle(img, (frameR, frameR), (wCam - frameR, hCam - frameR), (255, 0, 255), 2)
+        MIDDLE_FINGER_TIP = lmList[12]
+        MIDDLE_10_POINT = lmList[10]
 
-        # If only index finger which means in Mouse Moving Mode
-        if fingers[INDEX_FINGER] == 1 and fingers[MIDDLE_FINGER] == 0:
-            # Convert coordinates from webcam coords to screen coords for correct position
-            scrCoordX = np.interp(x1, (frameR, wCam-frameR), (0, wScr))
-            scrCoordY = np.interp(y1, (frameR, hCam-frameR), (0, hScr))
+        PINKY_TIP = lmList[20]
 
-            # Smoothen the values
-            clocX = plocX + (scrCoordX - plocX) / smoothening
-            clocY = plocY + (scrCoordY - plocY) / smoothening
+        THUMB_TIP = lmList[4]
 
-            # Move the Mouse
-            pyautogui.moveTo(wScr - clocX, clocY)
-            cv2.circle(img, (x1, y1), 15, (255, 0, 255), cv2.FILLED)
-            plocX, plocY = clocX, clocY
+        x_in6, y_in6 = INDEX_6_POINT[0], INDEX_6_POINT[1]
+        x_p, y_p = PINKY_TIP[0], PINKY_TIP[1]
 
-        # If both index and middle fingers are up, it is Mouse Clicking Mode
-        if fingers[INDEX_FINGER] == 1 and fingers[MIDDLE_FINGER] == 1:
-            # Find distance between the fingers
-            length, lineInfo, img = detector.findDistance(lmList[INDEX_FINGER_TIP], lmList[MIDDLE_FINGER_TIP], img)
+        length_left_click, info, img = detector.findDistance(INDEX_FINGER_TIP[:2], INDEX_6_POINT[:2], img)
+        length_right_click, info, img = detector.findDistance(MIDDLE_FINGER_TIP[:2], MIDDLE_10_POINT[:2], img)
+        length_scroll, info, img = detector.findDistance(PINKY_TIP[:2], WRIST_POINT[:2], img)
+        length_pinch, info, img = detector.findDistance(INDEX_FINGER_TIP[:2], THUMB_TIP[:2], img)
 
-            # Click mouse if distance is short
-            if length < 40:
-                cv2.circle(img, (lineInfo[4], lineInfo[5]), 15, (0, 255, 0), cv2.FILLED)
-                pyautogui.click()
+        h, w, _ = img.shape
 
-    # Frame Rate
-    cTime = time.time()
-    fps = 1/(cTime - pTime)
-    pTime = cTime
-    cv2.putText(img, str(int(fps)), (20, 50), cv2.FONT_HERSHEY_PLAIN, 3, (255, 0, 0), 3)
+        frameR = 150
 
-    # Display
-    cv2.imshow("Image", img)
-    cv2.waitKey(1)
+        frame_center_y = h // 2
 
+        cv2.rectangle(img, (frameR, frameR), (w - frameR, h - frameR), (255, 0, 255), 2)
+
+        x_map = np.interp(x_in6, (frameR, w - frameR), (0, wScr))
+        y_map = np.interp(y_in6, (frameR, h - frameR), (0, hScr))
+
+        cX = pX + (x_map - pX) / smoothening
+        cY = pY + (y_map - pY) / smoothening
+
+        if length_pinch < 13:
+            if not is_dragging:
+                pyautogui.mouseDown()
+                is_dragging= True
+            pyautogui.moveTo(cX, cY)
+            pX, pY = cX, cY
+
+        elif is_dragging and length_pinch > 13:
+            pyautogui.mouseUp()
+            is_dragging = False
+
+        elif length_scroll > 100:
+            if y_p < frame_center_y: 
+                pyautogui.scroll(20)
+            else: 
+                pyautogui.scroll(-20)
+
+        elif length_left_click < 20:
+            pyautogui.click()
+            time.sleep(0.5)
+        
+        elif length_right_click < 20:
+            pyautogui.rightClick()
+            time.sleep(0.5)
+
+        else:
+            pyautogui.moveTo(cX, cY)
+            pX, pY = cX, cY
+            
+
+    cv2.imshow("Deteksi Tangan", img)
+
+    
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows
